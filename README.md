@@ -1,8 +1,8 @@
-# spotify-db
+# Base de datos de Spotify
 
-Base de datos transaccional de una app de música (Spotify) simulada, implementada en PostgreSQL 18 con Docker Compose.
+Base de datos transaccional de una app de música (Spotify) simulada, implementada en PostgreSQL 18.
 
-## Contexto
+## Descripción
 
 Laura, product manager de Spotify, solicitó ordenar los datos de su sistema. La app ofrece suscripciones, y cada suscriptor tiene un perfil, una biblioteca donde guarda canciones y álbumes, y las playlists que crea. El catálogo musical incluye canciones, álbumes y artistas.
 
@@ -28,26 +28,20 @@ spotify-db/
 
 ## Estructura de datos
 
-14 tablas: 9 entidades y 5 tablas de unión.
 
 | Tipo | Tablas |
 | --- | --- |
-| Entidades | `subscriptions`, `subscribers`, `profiles`, `libraries`, `playlists`, `songs`, `albums`, `artists`, `countries` |
-| Tablas de unión | `playlist_song`, `song_artist`, `song_album`, `library_song`, `library_album` |
+| Entidades | subscriptions, subscribers, profiles, libraries, playlists, songs, albums, artists, countries |
+| Tablas de unión | playlist_song, song_artist, song_album, library_song, library_album |
 
-Cada cardinalidad del diagrama ER se refleja en una restricción:
+Las cardinalidades del diagrama están definidas por una restricción de esquema cada una:
 
 | Cardinalidad | Restricción |
 | --- | --- |
 | Mínimo 1 (ej. todo suscriptor tiene una suscripción) | `NOT NULL` en la llave foránea |
 | Máximo 1 en una relación 1 a 1 (ej. un suscriptor, un perfil) | `UNIQUE` en la llave foránea |
-| Un par no se repite en una tabla de unión | `PRIMARY KEY` compuesta |
-| Supuestos en base a lógica de negocio (precio ≥ 0, rol `principal` o `feat.`, etc.) | `CHECK` |
-
-Dos cardinalidades no se pueden forzar con estas restricciones:
-
-- **Todo suscriptor tiene perfil y biblioteca.** Lo garantiza la transacción de registro de `tests.sql`, que crea las tres cosas o ninguna.
-- **Toda canción tiene al menos un artista.**.
+| Un par no se repite en una tabla de unión | PRIMARY KEY compuesta |
+| Supuestos en base a lógica de negocio (precio ≥ 0, rol principal o feat., etc.) | `CHECK` |
 
 ## Supuestos
 
@@ -61,19 +55,19 @@ Dos cardinalidades no se pueden forzar con estas restricciones:
 - Todo álbum lo publica exactamente un artista, como en el diagrama conceptual unificado.
 - La foto del perfil es opcional (Marta no tiene).
 
-### Casos agregados en el seed para testing
+### Casos agregados para testing
 
-| Caso | Registro | Origen |
-| --- | --- | --- |
-| Playlist vacía | Viaje (13) | Datos de Laura |
-| Canción sin álbum | Calor de Agosto (108) | Datos de Laura |
-| Suscripción sin suscriptores | Estudiantes (4), $15 al mes | Agregado; precio inventado |
-| Artista sin canciones ni álbumes | Noah Kahan (A11) | Agregado; no tiene música cargada en este catálogo |
+| Caso | Registro |
+| --- | --- |
+| Playlist vacía | Viaje (13) |
+| Canción sin álbum | Calor de Agosto (108) |
+| Suscripción sin suscriptores | Estudiantes (4), $15 al mes |
+| Artista sin canciones ni álbumes | Noah Kahan (A11) |
 
 
 ## Variables de entorno
 
-Las credenciales van en un archivo `.env` que no se sube al repositorio. Se crea a partir de la plantilla:
+Las credenciales van en un archivo `.env` , se puede crear a partir de:
 
 ```bash
 cp .env.example .env
@@ -85,33 +79,28 @@ cp .env.example .env
 | `POSTGRES_PASSWORD` | Contraseña de ese usuario | "contrasena123" |
 | `POSTGRES_DB` | Base de datos que se crea | `spotify` |
 
-## Cómo iniciar PostgreSQL
+## Inicializar PostgreSQL
 
 Requisitos: Docker y Docker Compose. Los comandos se ejecutan en la carpeta del repositorio.
 
 ```bash
 docker compose up -d
-```
-
-La primera vez, con el volumen vacío, PostgreSQL crea el usuario y la base de datos del `.env` y ejecuta `db/01_schema.sql` y `db/02_seed.sql`. Espera unos segundos y revisa que no haya errores (si el comando no muestra nada, todo salió bien):
-
-```bash
 docker compose logs postgres | grep ERROR
 ```
 
-## Cómo ejecutar las pruebas
+## Ejecución de testing
 
 ```bash
 docker compose exec postgres psql -U admin -d spotify -f /tests.sql
 ```
 
-Usa los valores de `POSTGRES_USER` y `POSTGRES_DB` de tu `.env`. Cada prueba tiene un comentario con el resultado esperado:
+Se usan los valores de `POSTGRES_USER` y `POSTGRES_DB` de `.env` y cada prueba tiene un comentario con el resultado esperado.
 
-- **a)** Las preguntas de Laura.
-- **b)** Intentos de romper las reglas: cada uno debe mostrar un `ERROR`.
-- **c)** Registro y eliminación de un suscriptor con transacciones, con un caso exitoso y uno que falla a medio camino.
+- a) Responde preguntas de Laura sobre insights de los datos.
+- b) Intentos de romper las restricciones de esquema, errores esperados.
+- c) Registro y eliminación de un suscriptor con transacciones, evaluando casos exitosos y fallidos.
 
-La parte c modifica datos. Para repetir las pruebas, se debe reiniciar el contenedor desde cero:
+Para repetir las pruebas, se debe reiniciar el contenedor desde cero porque la sección c modifica datos. Se puede reiniciar utilizando:
 
 ```bash
 docker compose down -v && docker compose up -d
