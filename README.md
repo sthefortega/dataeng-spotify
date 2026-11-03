@@ -11,7 +11,7 @@ Los datos originales fueron normalizados a 3FN para su implementación final en 
 ## Estructura
 
 ```
-spotify-db/
+dataeng-spotify/
 ├── db/
 │   ├── 01_schema.sql      # Creación de estructura inicial.
 │   └── 02_seed.sql        # Datos proporcionados por Laura y casos adicionales.
@@ -40,7 +40,7 @@ Las cardinalidades del diagrama están definidas por una restricción de esquema
 | --- | --- |
 | Mínimo 1 (ej. todo suscriptor tiene una suscripción) | `NOT NULL` en la llave foránea |
 | Máximo 1 en una relación 1 a 1 (ej. un suscriptor, un perfil) | `UNIQUE` en la llave foránea |
-| Un par no se repite en una tabla de unión | PRIMARY KEY compuesta |
+| Un par no se repite en una tabla de unión | `PRIMARY KEY`compuesta |
 | Supuestos en base a lógica de negocio (precio ≥ 0, rol principal o feat., etc.) | `CHECK` |
 
 ## Supuestos
@@ -50,8 +50,8 @@ Las cardinalidades del diagrama están definidas por una restricción de esquema
 - Una canción no se repite dentro de una misma playlist, álbum o biblioteca.
 - El orden de las canciones en la celda de una playlist es su posición.
 - La duración de las canciones se guarda en segundos.
-- Se usan llaves sustitutas (`subscriber_id`, `subscription_id`, `profile_id`, `library_id`) porque un correo o el nombre de una suscripción pueden cambiar. `email` y `subscriptions.name` son únicos.
-- `subscriber_id`, `profile_id` y `library_id` se asignaron en el orden de la tabla D (ana = 1, luis = 2, marta = 3, diego = 4).
+- Se usan llaves sustitutas (subscriber_id, subscription_id, profile_id, library_id) considerando que el correo o el nombre de una suscripción pueden cambiar. email y subscriptions.name son únicos.
+- subscriber_id, profile_id y library_id se asignaron en el orden de la tabla D (ana = 1, luis = 2, marta = 3, diego = 4).
 - Todo álbum lo publica exactamente un artista, como en el diagrama conceptual unificado.
 - La foto del perfil es opcional (Marta no tiene).
 
