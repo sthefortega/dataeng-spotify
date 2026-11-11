@@ -58,8 +58,66 @@ LEFT JOIN (
 ORDER BY sb.email, g.tipo, g.titulo;
 
 -- ¿Cuál es la canción más escuchada?
--- No se puede responder la pregunta ya que se requiere información
--- sobre las reproducciones por canción y usuario, y actualmente no se cuenta con ella.
+-- En la Tarea 3 no se podía responder porque no había datos de reproducciones. Ahora sí:
+-- el processor cuenta las reproducciones válidas que llegan por Kafka.
+-- Se usa song_daily_play, que guarda todas las reproducciones válidas por canción y día.
+-- "Más escuchada" = la que tiene más reproducciones válidas desde siempre.
+-- Esperado: 1 fila (o varias, si hay empate en el primer lugar).
+\echo
+\echo '¿Cuál es la canción más escuchada?'
+
+WITH totales AS (
+    SELECT song_id, SUM(num_rep) AS reproducciones
+    FROM song_daily_play
+    GROUP BY song_id
+)
+SELECT s.song_id, s.title AS cancion, t.reproducciones
+FROM totales t
+JOIN songs s ON s.song_id = t.song_id
+WHERE t.reproducciones = (SELECT MAX(reproducciones) FROM totales)
+ORDER BY s.song_id;
+
+-- Top 100 semanal (regla 4): las 100 canciones con más reproducciones válidas de la
+-- última semana completa, de lunes a domingo, en UTC (regla 3). La semana en curso no cuenta.
+-- date_trunc('week', ...) regresa el lunes de la semana actual; la semana anterior va de
+-- ese lunes menos 7 días al domingo anterior (ese lunes menos 1 día).
+-- Esperado: primero, las fechas de la semana; después, hasta 100 canciones ordenadas
+-- de mayor a menor (con este catálogo, a lo más 8).
+\echo
+\echo 'Top 100 semanal: semana evaluada'
+
+SELECT (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '7 days')::date AS lunes,
+       (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '1 day')::date  AS domingo;
+
+\echo 'Top 100 semanal'
+
+SELECT RANK() OVER (ORDER BY SUM(d.num_rep) DESC) AS lugar,
+       s.song_id,
+       s.title         AS cancion,
+       SUM(d.num_rep)  AS reproducciones
+FROM song_daily_play d
+JOIN songs s ON s.song_id = d.song_id
+WHERE d.play_date BETWEEN (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '7 days')::date
+                      AND (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '1 day')::date
+GROUP BY s.song_id, s.title
+ORDER BY reproducciones DESC, s.song_id
+LIMIT 100;
+
+-- Las 20 canciones más escuchadas de un suscriptor (regla 5), desde siempre.
+-- Se usa ana (subscriber_id 1), que no se elimina en la parte c.
+-- Esperado: hasta 20 canciones de ana, ordenadas de mayor a menor (con este catálogo, a lo más 8).
+\echo
+\echo 'Las 20 canciones más escuchadas de ana@mail.com'
+
+SELECT RANK() OVER (ORDER BY ssp.num_rep DESC) AS lugar,
+       s.song_id,
+       s.title       AS cancion,
+       ssp.num_rep   AS reproducciones
+FROM subscriber_song_play ssp
+JOIN songs s ON s.song_id = ssp.song_id
+WHERE ssp.subscriber_id = 1
+ORDER BY ssp.num_rep DESC, s.song_id
+LIMIT 20;
 
 
 
@@ -78,7 +136,7 @@ VALUES (101, 'Canción duplicada', 200, 'Pop');
 
 -- PRIMARY KEY compuesta: una canción no se puede repetir en una sola playlist.
 -- Esperado: ERROR por llave duplicada.
-\echo 
+\echo
 \echo 'TEST 2: Insertar PK compuesta duplicada: canción 101 en playlist 10'
 INSERT INTO playlist_song (playlist_id, song_id, position, added_at)
 VALUES (10, 101, 4, '2026-07-01');
@@ -163,6 +221,21 @@ UPDATE songs SET duration_seconds = 0 WHERE song_id = 101;
 \echo 'TEST 14: Actualizar precio de suscripción a negativo'
 UPDATE subscriptions SET monthly_price = -10 WHERE subscription_id = 1;
 
+-- CHECK: un conteo de reproducciones no puede ser 0 ni negativo; una fila solo existe
+-- si hay al menos una reproducción válida.
+-- Esperado: ERROR por violar la restricción check.
+\echo
+\echo 'TEST 15: Insertar un conteo de reproducciones en 0'
+INSERT INTO song_daily_play (song_id, play_date, num_rep)
+VALUES (101, '2026-01-01', 0);
+
+-- FOREIGN KEY: un conteo debe ser de un suscriptor y una canción que existen.
+-- Esperado: ERROR por llave foránea inválida.
+\echo
+\echo 'TEST 16: Insertar un conteo de un suscriptor que no existe'
+INSERT INTO subscriber_song_play (subscriber_id, song_id, num_rep)
+VALUES (99, 101, 1);
+
 
 
 -- c) Registro y eliminación de un suscriptor, con transacciones
@@ -199,12 +272,12 @@ SELECT COUNT(*) AS manuel_antes FROM subscribers WHERE email = 'manuel@mail.com'
 
 BEGIN;
 INSERT INTO subscribers (subscriber_id, email, registered_at, subscription_id)
-VALUES (6, 'manuel@mail.com', '2026-11-01', 1);     
+VALUES (6, 'manuel@mail.com', '2026-11-01', 1);
 INSERT INTO profiles (profile_id, subscriber_id, display_name, photo_url, country_code)
 VALUES (6, 6, 'manuel', NULL, 'PG');                         -- PG falla porque no existe en el catálogo de países
 INSERT INTO libraries (library_id, subscriber_id)
-VALUES (6, 6);                                              
-COMMIT;                                                    
+VALUES (6, 6);
+COMMIT;
 
 -- Después. Esperado: 0 en las tres columnas.
 
@@ -213,12 +286,28 @@ SELECT (SELECT COUNT(*) FROM subscribers WHERE email = 'manuel@mail.com') AS sus
        (SELECT COUNT(*) FROM libraries   WHERE subscriber_id = 6)       AS biblioteca;
 
 -- c.3) Eliminación exitosa
--- Se usa ON DELETE CASCADE: borrando todas las dependencias del suscriptor
+-- No se usa ON DELETE CASCADE: cada dependencia del suscriptor se borra de forma explícita,
+-- en orden, dentro de una sola transacción.
+-- Desde la Tarea 4, luis también tiene conteos en subscriber_song_play, que apuntan a él
+-- con una llave foránea: hay que borrarlos antes que al suscriptor, o el DELETE falla.
+--
+-- ¿Cambia el top semanal al eliminar a un suscriptor? NO.
+-- El top semanal se calcula con song_daily_play, que guarda reproducciones por canción y
+-- día, sin saber de qué suscriptor son: no hay nada de luis que borrar ahí. Las
+-- reproducciones de luis sí ocurrieron, así que siguen contando en el top semanal y en
+-- "la canción más escuchada". Lo que sí desaparece son sus 20 más escuchadas, porque
+-- eran suyas (subscriber_song_play).
+-- Consecuencias:
+--   * Después de esta eliminación, el total de subscriber_song_play ya no es igual al de
+--     song_daily_play, y verify.py ya no muestra OK: por eso se ejecuta antes de tests.sql.
+--   * Si siguen llegando mensajes de luis por Kafka, el processor los descarta como
+--     "IDs inexistentes", porque luis ya no existe.
 
 \echo
-\echo 'c.3) Eliminación exitosa de luis@mail.com' 
+\echo 'c.3) Eliminación exitosa de luis@mail.com'
 
--- Antes. Esperado: 1 | 1 | 1 | 1 | 2 | 2 | 5 y el catálogo con 8 canciones, 6 álbumes y 11 artistas.
+-- Antes. Esperado: 1 | 1 | 1 | 1 | 2 | 2 | 5 | N (las canciones de luis con conteos; depende de
+-- las reproducciones simuladas) y el catálogo con 8 canciones, 6 álbumes y 11 artistas.
 SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 2)           AS suscriptor,
        (SELECT COUNT(*) FROM profiles      WHERE subscriber_id = 2)           AS perfil,
        (SELECT COUNT(*) FROM libraries     WHERE subscriber_id = 2)           AS biblioteca,
@@ -226,9 +315,19 @@ SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 2)           AS
        (SELECT COUNT(*) FROM library_album WHERE library_id = 2)              AS albumes_guardados,
        (SELECT COUNT(*) FROM playlists     WHERE subscriber_id = 2)           AS playlists,
        (SELECT COUNT(*) FROM playlist_song WHERE playlist_id IN (12, 14))     AS canciones_en_playlists,
+       (SELECT COUNT(*) FROM subscriber_song_play WHERE subscriber_id = 2)    AS conteos_por_cancion,
        (SELECT COUNT(*) FROM songs)   AS catalogo_canciones,
        (SELECT COUNT(*) FROM albums)  AS catalogo_albumes,
        (SELECT COUNT(*) FROM artists) AS catalogo_artistas;
+
+-- Top semanal antes de eliminar (reproducciones por canción de la última semana completa).
+\echo 'Top semanal ANTES de eliminar a luis'
+SELECT d.song_id, SUM(d.num_rep) AS reproducciones_semana
+FROM song_daily_play d
+WHERE d.play_date BETWEEN (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '7 days')::date
+                      AND (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '1 day')::date
+GROUP BY d.song_id
+ORDER BY reproducciones_semana DESC, d.song_id;
 
 BEGIN;
 -- Las canciones de sus playlists
@@ -241,6 +340,8 @@ DELETE FROM library_song
 WHERE library_id IN (SELECT library_id FROM libraries WHERE subscriber_id = 2);
 DELETE FROM library_album
 WHERE library_id IN (SELECT library_id FROM libraries WHERE subscriber_id = 2);
+-- Sus conteos de reproducciones por canción (Tarea 4)
+DELETE FROM subscriber_song_play WHERE subscriber_id = 2;
 -- Su biblioteca y su perfil
 DELETE FROM libraries WHERE subscriber_id = 2;
 DELETE FROM profiles  WHERE subscriber_id = 2;
@@ -248,7 +349,7 @@ DELETE FROM profiles  WHERE subscriber_id = 2;
 DELETE FROM subscribers WHERE subscriber_id = 2;
 COMMIT;
 
--- Después. Esperado: 0 en las siete primeras columnas y el catálogo igual (8 canciones, 6 álbumes, 11 artistas).
+-- Después. Esperado: 0 en las ocho primeras columnas y el catálogo igual (8 canciones, 6 álbumes, 11 artistas).
 SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 2)           AS suscriptor,
        (SELECT COUNT(*) FROM profiles      WHERE subscriber_id = 2)           AS perfil,
        (SELECT COUNT(*) FROM libraries     WHERE subscriber_id = 2)           AS biblioteca,
@@ -256,9 +357,19 @@ SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 2)           AS
        (SELECT COUNT(*) FROM library_album WHERE library_id = 2)              AS albumes_guardados,
        (SELECT COUNT(*) FROM playlists     WHERE subscriber_id = 2)           AS playlists,
        (SELECT COUNT(*) FROM playlist_song WHERE playlist_id IN (12, 14))     AS canciones_en_playlists,
+       (SELECT COUNT(*) FROM subscriber_song_play WHERE subscriber_id = 2)    AS conteos_por_cancion,
        (SELECT COUNT(*) FROM songs)   AS catalogo_canciones,
        (SELECT COUNT(*) FROM albums)  AS catalogo_albumes,
        (SELECT COUNT(*) FROM artists) AS catalogo_artistas;
+
+-- Top semanal después de eliminar. Esperado: exactamente igual que antes.
+\echo 'Top semanal DESPUÉS de eliminar a luis (debe ser igual)'
+SELECT d.song_id, SUM(d.num_rep) AS reproducciones_semana
+FROM song_daily_play d
+WHERE d.play_date BETWEEN (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '7 days')::date
+                      AND (date_trunc('week', now() AT TIME ZONE 'UTC') - interval '1 day')::date
+GROUP BY d.song_id
+ORDER BY reproducciones_semana DESC, d.song_id;
 
 -- ---------------------------------------------------------------------
 -- c.4) Falla: Eliminación a medias
@@ -266,20 +377,22 @@ SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 2)           AS
 \echo
 \echo '=== c.4) Eliminación de ana@mail.com que falla a medio camino'
 
--- Antes. Esperado: 1 | 1 | 1 | 2 | 1 | 2 | 5
+-- Antes. Esperado: 1 | 1 | 1 | 2 | 1 | 2 | 5 | N (las canciones de ana con conteos)
 SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 1)           AS suscriptor,
        (SELECT COUNT(*) FROM profiles      WHERE subscriber_id = 1)           AS perfil,
        (SELECT COUNT(*) FROM libraries     WHERE subscriber_id = 1)           AS biblioteca,
        (SELECT COUNT(*) FROM library_song  WHERE library_id = 1)              AS canciones_guardadas,
        (SELECT COUNT(*) FROM library_album WHERE library_id = 1)              AS albumes_guardados,
        (SELECT COUNT(*) FROM playlists     WHERE subscriber_id = 1)           AS playlists,
-       (SELECT COUNT(*) FROM playlist_song WHERE playlist_id IN (10, 11))     AS canciones_en_playlists;
+       (SELECT COUNT(*) FROM playlist_song WHERE playlist_id IN (10, 11))     AS canciones_en_playlists,
+       (SELECT COUNT(*) FROM subscriber_song_play WHERE subscriber_id = 1)    AS conteos_por_cancion;
 
 BEGIN;
 DELETE FROM library_song
-WHERE library_id IN (SELECT library_id FROM libraries WHERE subscriber_id = 1); 
+WHERE library_id IN (SELECT library_id FROM libraries WHERE subscriber_id = 1);
 DELETE FROM library_album
 WHERE library_id IN (SELECT library_id FROM libraries WHERE subscriber_id = 1);
+DELETE FROM subscriber_song_play WHERE subscriber_id = 1;   -- funciona: borra sus conteos
 -- Intencionalmente no se borraron las canciones de playlist_song para provocar el error
 DELETE FROM playlists WHERE subscriber_id = 1;     -- Error por playlist_song que todavía está ligada a ellas
 DELETE FROM libraries WHERE subscriber_id = 1;
@@ -287,11 +400,13 @@ DELETE FROM profiles  WHERE subscriber_id = 1;
 DELETE FROM subscribers WHERE subscriber_id = 1;
 COMMIT;
 
--- Después. Esperado: lo mismo que antes, 1 | 1 | 1 | 2 | 1 | 2 | 5.
+-- Después. Esperado: lo mismo que antes, incluido N: sus conteos, que sí se habían
+-- borrado dentro de la transacción, regresaron con el ROLLBACK.
 SELECT (SELECT COUNT(*) FROM subscribers   WHERE subscriber_id = 1)           AS suscriptor,
        (SELECT COUNT(*) FROM profiles      WHERE subscriber_id = 1)           AS perfil,
        (SELECT COUNT(*) FROM libraries     WHERE subscriber_id = 1)           AS biblioteca,
        (SELECT COUNT(*) FROM library_song  WHERE library_id = 1)              AS canciones_guardadas,
        (SELECT COUNT(*) FROM library_album WHERE library_id = 1)              AS albumes_guardados,
        (SELECT COUNT(*) FROM playlists     WHERE subscriber_id = 1)           AS playlists,
-       (SELECT COUNT(*) FROM playlist_song WHERE playlist_id IN (10, 11))     AS canciones_en_playlists;
+       (SELECT COUNT(*) FROM playlist_song WHERE playlist_id IN (10, 11))     AS canciones_en_playlists,
+       (SELECT COUNT(*) FROM subscriber_song_play WHERE subscriber_id = 1)    AS conteos_por_cancion;
