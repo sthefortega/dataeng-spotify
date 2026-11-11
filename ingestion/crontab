@@ -1,0 +1,3 @@
+# minuto hora día-del-mes mes día-de-la-semana  comando
+# Cada 5 minutos. flock -n evita que una corrida empiece si la anterior no ha terminado.
+*/5 * * * * /usr/bin/flock -n /tmp/processor.lock /app/.venv/bin/python /app/ingestion/processor.py
